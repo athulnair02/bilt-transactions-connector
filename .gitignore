@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+*.csv
+.bilt_token_cache.json
+.vscode
+.venv
