@@ -493,7 +493,6 @@ def write_csv(output_path: Path, rows: list[dict[str, str]]) -> None:
         "amount",
         "currency",
         "createdAt",
-        "description",
         "merchant",
         "category",
     ]

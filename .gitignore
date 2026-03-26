@@ -3,5 +3,6 @@ __pycache__/
 *.pyo
 *.csv
 .bilt_token_cache.json
+empower/category_mappings.json
 .vscode
 .venv
