@@ -5,317 +5,35 @@ from __future__ import annotations
 
 import argparse
 import csv
-import datetime as dt
-import json
-from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+import logging
 from difflib import get_close_matches
 from pathlib import Path
 from typing import Any
 
-import requests
+from client import EmpowerClient
+from helpers import (
+    ask_non_empty,
+    format_decimal,
+    load_mapping_file,
+    normalize_text,
+    parse_created_at,
+    parse_decimal,
+    save_json_file,
+)
+from models import CsvTransaction, EmpowerAccount, EmpowerCategory, EmpowerError
 
-EMPOWER_API_BASE_URL = "https://pc-api.empower-retirement.com/api"
 DEFAULT_TIMEOUT_SECONDS = 30
 DEFAULT_MAPPING_FILE = Path(__file__).with_name("category_mappings.json")
-DEFAULT_CATEGORY_TYPE = "EXPENSE"
-API_CLIENT = "WEB"
+LOG_FORMAT = "[%(levelname)s] %(message)s"
 
-
-class EmpowerError(Exception):
-    """Base application error."""
-
-
-@dataclass(frozen=True)
-class EmpowerAccount:
-    account_id: str
-    name: str
-    firm_name: str
-    product_type: str
-    current_balance: Decimal
-
-
-@dataclass(frozen=True)
-class EmpowerCategory:
-    category_id: int
-    name: str
-    category_type: str
-    is_editable: bool
-
-
-@dataclass
-class CsvTransaction:
-    row_number: int
-    transaction_date: dt.date
-    merchant: str
-    bilt_category: str
-    amount: Decimal
-    currency: str
-    status: str
-    transaction_type: str
-    subtype: str
-    empower_category: EmpowerCategory | None = None
-    skipped: bool = False
-
-
-def print_info(message: str) -> None:
-    print(f"[INFO] {message}")
-
-
-def print_warn(message: str) -> None:
-    print(f"[WARN] {message}")
-
-
-def print_error(message: str) -> None:
-    print(f"[ERROR] {message}")
-
-
-def normalize_text(value: str) -> str:
-    normalized = "".join(char.lower() if char.isalnum() else " " for char in value)
-    return " ".join(normalized.split())
-
-
-def sanitize_jsessionid(value: str) -> str:
-    cookie_value = value.strip()
-    if cookie_value.startswith("JSESSIONID="):
-        cookie_value = cookie_value.split("=", 1)[1]
-    if ";" in cookie_value:
-        cookie_value = cookie_value.split(";", 1)[0]
-    if not cookie_value:
-        raise EmpowerError("JSESSIONID cannot be empty.")
-    return cookie_value
-
-
-def parse_decimal(value: str, *, field_name: str) -> Decimal:
-    try:
-        return Decimal(value)
-    except InvalidOperation as exc:
-        raise EmpowerError(f"Invalid decimal value for {field_name}: {value!r}") from exc
-
-
-def format_decimal(value: Decimal) -> str:
-    quantized = value.quantize(Decimal("0.01"))
-    return format(quantized, "f")
-
-
-def parse_created_at(value: str) -> dt.date:
-    text = value.strip()
-    if text.endswith("Z"):
-        text = f"{text[:-1]}+00:00"
-    try:
-        return dt.datetime.fromisoformat(text).date()
-    except ValueError as exc:
-        raise EmpowerError(f"Invalid createdAt value: {value!r}") from exc
-
-
-def load_json_file(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-
-    try:
-        with path.open("r", encoding="utf-8") as file_handle:
-            payload = json.load(file_handle)
-    except (OSError, json.JSONDecodeError) as exc:
-        raise EmpowerError(f"Could not read JSON file {path}: {exc}") from exc
-
-    if not isinstance(payload, dict):
-        raise EmpowerError(f"JSON file {path} must contain an object at the top level.")
-    return payload
-
-
-def save_json_file(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as file_handle:
-        json.dump(payload, file_handle, indent=2, sort_keys=True)
-
-
-def load_mapping_file(path: Path) -> dict[str, dict[str, Any]]:
-    raw = load_json_file(path)
-    mappings: dict[str, dict[str, Any]] = {}
-    for key, value in raw.items():
-        if isinstance(key, str) and isinstance(value, dict):
-            mappings[key] = value
-    return mappings
-
-
-class EmpowerClient:
-    def __init__(self, jsessionid: str, csrf: str, timeout: int = DEFAULT_TIMEOUT_SECONDS) -> None:
-        self.session = requests.Session()
-        self.jsessionid = sanitize_jsessionid(jsessionid)
-        self.csrf = csrf.strip()
-        self.timeout = timeout
-
-        if not self.csrf:
-            raise EmpowerError("csrf token cannot be empty.")
-
-    def _headers(self) -> dict[str, str]:
-        return {"Cookie": f"JSESSIONID={self.jsessionid}"}
-
-    def _request_json(self, method: str, endpoint: str, **kwargs: Any) -> dict[str, Any]:
-        response = self.session.request(
-            method=method,
-            url=f"{EMPOWER_API_BASE_URL}{endpoint}",
-            headers=self._headers(),
-            timeout=self.timeout,
-            **kwargs,
-        )
-
-        if response.status_code >= 400:
-            raise EmpowerError(
-                f"{method} {endpoint} failed with {response.status_code}: {response.text[:500]}"
-            )
-        print_info(f"{method} {endpoint} returned {response.status_code}.")
-
-        # Response status code may show success, but an error message can still exist
-        err_msg = response.json().get('spHeader').get('errors', [{}])[0].get('message', None)
-        if err_msg:
-            raise EmpowerError(
-                f"{method} {endpoint} returned an error. Response: {err_msg}"
-            )
-
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise EmpowerError(f"{method} {endpoint} did not return JSON.") from exc
-
-        if not isinstance(payload, dict):
-            raise EmpowerError(f"{method} {endpoint} returned a non-object JSON response.")
-        return payload
-
-    def get_accounts(self) -> list[EmpowerAccount]:
-        payload = self._request_json(
-            "POST",
-            "/newaccount/getAccountsLite",
-            files={
-                "csrf": (None, self.csrf),
-                "apiClient": (None, API_CLIENT),
-            },
-        )
-
-        accounts = payload.get("spData")
-        if not isinstance(accounts, list):
-            raise EmpowerError("Account response does not contain a spData list.")
-
-        extracted: list[EmpowerAccount] = []
-        for item in accounts:
-            if not isinstance(item, dict):
-                continue
-            account_id = item.get("pcapAccountId")
-            name = item.get("name")
-            if not isinstance(account_id, str) or not isinstance(name, str):
-                continue
-            current_balance_value = item.get("currentBalance", 0)
-            extracted.append(
-                EmpowerAccount(
-                    account_id=account_id,
-                    name=name,
-                    firm_name=item.get("firmName") if isinstance(item.get("firmName"), str) else "",
-                    product_type=item.get("productType")
-                    if isinstance(item.get("productType"), str)
-                    else "UNKNOWN",
-                    current_balance=parse_decimal(str(current_balance_value), field_name="currentBalance"),
-                )
-            )
-
-        if not extracted:
-            raise EmpowerError("No uploadable accounts were found in the account response.")
-        return extracted
-
-    def get_categories(self) -> list[EmpowerCategory]:
-        payload = self._request_json(
-            "POST",
-            "/transactioncategory/getCategories",
-            data={
-                "csrf": self.csrf,
-                "apiClient": API_CLIENT,
-            },
-        )
-        categories = payload.get("spData")
-        if not isinstance(categories, list):
-            raise EmpowerError("Category response does not contain a spData list.")
-
-        extracted: list[EmpowerCategory] = []
-        for item in categories:
-            if not isinstance(item, dict):
-                continue
-            category_id = item.get("transactionCategoryId")
-            name = item.get("name")
-            category_type = item.get("type")
-            if not isinstance(category_id, int) or not isinstance(name, str) or not isinstance(category_type, str):
-                continue
-            extracted.append(
-                EmpowerCategory(
-                    category_id=category_id,
-                    name=name,
-                    category_type=category_type,
-                    is_editable=bool(item.get("isEditable", False)),
-                )
-            )
-
-        if not extracted:
-            raise EmpowerError("No categories were returned by Empower.")
-        return extracted
-
-    def add_category(self, name: str, category_type: str = DEFAULT_CATEGORY_TYPE) -> EmpowerCategory:
-        payload = self._request_json(
-            "POST",
-            "/transactioncategory/addCategory",
-            data={
-                "name": name,
-                "type": category_type,
-                "csrf": self.csrf,
-                "apiClient": API_CLIENT,
-            },
-        )
-        item = payload.get("spData")
-        if not isinstance(item, dict):
-            raise EmpowerError("Create-category response does not contain a spData object.")
-
-        category_id = item.get("transactionCategoryId")
-        category_name = item.get("name")
-        category_type_value = item.get("type")
-        if (
-            not isinstance(category_id, int)
-            or not isinstance(category_name, str)
-            or not isinstance(category_type_value, str)
-        ):
-            raise EmpowerError("Create-category response is missing category fields.")
-
-        return EmpowerCategory(
-            category_id=category_id,
-            name=category_name,
-            category_type=category_type_value,
-            is_editable=bool(item.get("isEditable", False)),
-        )
-
-    def create_transaction(self, account_id: str, transaction: CsvTransaction) -> dict[str, Any]:
-        if transaction.empower_category is None:
-            raise EmpowerError("Cannot upload a transaction without an Empower category.")
-
-        payload = self._request_json(
-            "POST",
-            "/transaction/createUserTransaction",
-            data={
-                "transactionDate": transaction.transaction_date.isoformat(),
-                "userAccountId": account_id,
-                "description": transaction.merchant,
-                "transactionCategoryId": str(transaction.empower_category.category_id),
-                "amount": format_decimal(-transaction.amount),
-                "customTags": "[]",
-                "csrf": self.csrf,
-            },
-        )
-        sp_data = payload.get("spData")
-        if not isinstance(sp_data, dict):
-            raise EmpowerError("Create-transaction response does not contain a spData object.")
-        return sp_data
+logger = logging.getLogger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Upload Bilt transactions CSV rows into Empower.")
     parser.add_argument("csv_path", help="Path to a Bilt-exported CSV file.")
-    parser.add_argument("--jsessionid", help="Empower JSESSIONID cookie value.")
-    parser.add_argument("--csrf", help="Empower csrf token value.")
+    parser.add_argument("-j", "--jsessionid", help="Empower JSESSIONID cookie value.")
+    parser.add_argument("-c", "--csrf", help="Empower csrf token value.")
     parser.add_argument(
         "--mapping-file",
         default=str(DEFAULT_MAPPING_FILE),
@@ -328,17 +46,6 @@ def parse_args() -> argparse.Namespace:
         help=f"HTTP timeout in seconds (default: {DEFAULT_TIMEOUT_SECONDS}).",
     )
     return parser.parse_args()
-
-
-def ask_non_empty(prompt: str, default: str | None = None) -> str:
-    while True:
-        default_note = f" [{default}]" if default else ""
-        value = input(f"{prompt}{default_note}: ").strip()
-        if not value and default is not None:
-            return default
-        if value:
-            return value
-        print_warn("This value cannot be empty.")
 
 
 def read_transactions(csv_path: Path) -> list[CsvTransaction]:
@@ -388,13 +95,13 @@ def choose_account(accounts: list[EmpowerAccount]) -> EmpowerAccount:
     while True:
         raw = input("Choose an account number: ").strip()
         if not raw.isdigit():
-            print_warn("Please enter a numeric account choice.")
+            logger.warning("Please enter a numeric account choice.")
             continue
 
         selection = int(raw) - 1
         if 0 <= selection < len(accounts):
             return accounts[selection]
-        print_warn("Choice out of range.")
+        logger.warning("Choice out of range.")
 
 
 def build_category_indexes(categories: list[EmpowerCategory]) -> tuple[dict[int, EmpowerCategory], dict[str, list[EmpowerCategory]]]:
@@ -484,7 +191,7 @@ def choose_existing_category(categories: list[EmpowerCategory], initial_query: s
     while True:
         matches = preview_categories(categories, query=query)
         if not matches:
-            print_warn("No categories matched that search. Try another term.")
+            logger.warning("No categories matched that search. Try another term.")
         else:
             print("\nMatching Empower categories:")
             for index, category in enumerate(matches, start=1):
@@ -502,12 +209,12 @@ def choose_existing_category(categories: list[EmpowerCategory], initial_query: s
             selection = int(raw) - 1
             if 0 <= selection < len(matches):
                 return matches[selection]
-            print_warn("Choice out of range.")
+            logger.warning("Choice out of range.")
             continue
         if raw:
             query = raw
             continue
-        print_warn("Please choose a category number or enter a search term.")
+        logger.warning("Please choose a category number or enter a search term.")
 
 
 def prompt_resolution_action(transaction: CsvTransaction, suggestions: list[EmpowerCategory]) -> str:
@@ -526,7 +233,7 @@ def prompt_resolution_action(transaction: CsvTransaction, suggestions: list[Empo
         choice = input("Choose an option (m/c/s): ").strip().lower()
         if choice in {"m", "c", "s"}:
             return choice
-        print_warn("Please enter 'm', 'c', or 's'.")
+        logger.warning("Please enter 'm', 'c', or 's'.")
 
 
 def create_new_category_flow(client: EmpowerClient, categories: list[EmpowerCategory]) -> EmpowerCategory:
@@ -535,15 +242,13 @@ def create_new_category_flow(client: EmpowerClient, categories: list[EmpowerCate
         try:
             category = client.add_category(name)
         except EmpowerError as exc:
-            print_warn(str(exc))
+            logger.warning("%s", exc)
             retry = input("Try a different category name? [y/N]: ").strip().lower()
             if retry != "y":
                 raise
             continue
         categories.append(category)
-        print_info(
-            f"Created Empower category '{category.name}' with id {category.category_id}."
-        )
+        logger.info("Created Empower category '%s' with id %s.", category.name, category.category_id)
         return category
 
 
@@ -584,17 +289,21 @@ def apply_resolution_action(
             try:
                 chosen_category = choose_existing_category(categories, transaction.bilt_category)
             except EmpowerError as exc:
-                print_warn(str(exc))
+                logger.warning("%s", exc)
                 continue
             assign_transaction_category(transaction, chosen_category)
             if save_mapping and mapping_store is not None:
                 remember_mapping(mapping_store, transaction.bilt_category, chosen_category)
-                print_info(
-                    f"Saved mapping for Bilt category '{transaction.bilt_category}' -> '{chosen_category.name}'."
+                logger.info(
+                    "Saved mapping for Bilt category '%s' -> '%s'.",
+                    transaction.bilt_category,
+                    chosen_category.name,
                 )
             else:
-                print_info(
-                    f"Updated row {transaction.row_number} to Empower category '{chosen_category.name}'."
+                logger.info(
+                    "Updated row %s to Empower category '%s'.",
+                    transaction.row_number,
+                    chosen_category.name,
                 )
             return False
 
@@ -602,25 +311,29 @@ def apply_resolution_action(
             try:
                 chosen_category = create_new_category_flow(client, categories)
             except EmpowerError as exc:
-                print_warn(str(exc))
+                logger.warning("%s", exc)
                 continue
             assign_transaction_category(transaction, chosen_category)
             if save_mapping and mapping_store is not None:
                 remember_mapping(mapping_store, transaction.bilt_category, chosen_category)
-                print_info(
-                    f"Saved mapping for Bilt category '{transaction.bilt_category}' -> '{chosen_category.name}'."
+                logger.info(
+                    "Saved mapping for Bilt category '%s' -> '%s'.",
+                    transaction.bilt_category,
+                    chosen_category.name,
                 )
             else:
-                print_info(
-                    f"Updated row {transaction.row_number} to new Empower category '{chosen_category.name}'."
+                logger.info(
+                    "Updated row %s to new Empower category '%s'.",
+                    transaction.row_number,
+                    chosen_category.name,
                 )
             return True
 
         skip_transaction(transaction)
         if save_mapping:
-            print_info(f"Skipping row {transaction.row_number}.")
+            logger.info("Skipping row %s.", transaction.row_number)
         else:
-            print_info(f"Row {transaction.row_number} will be skipped from upload.")
+            logger.info("Row %s will be skipped from upload.", transaction.row_number)
         return False
 
 
@@ -641,8 +354,10 @@ def resolve_categories(
         )
         if mapped_category is not None:
             assign_transaction_category(transaction, mapped_category)
-            print_info(
-                f"Used saved mapping for Bilt category '{transaction.bilt_category}' -> '{mapped_category.name}'."
+            logger.info(
+                "Used saved mapping for Bilt category '%s' -> '%s'.",
+                transaction.bilt_category,
+                mapped_category.name,
             )
             continue
 
@@ -694,8 +409,10 @@ def print_review(transactions: list[CsvTransaction]) -> list[CsvTransaction]:
             f"{format_decimal(transaction.amount):>10} {bilt_category:<20} {empower_category:<24} {merchant}"
         )
 
-    print_info(
-        f"Review contains {len(included)} upload candidates and {len(skipped)} skipped transactions."
+    logger.info(
+        "Review contains %s upload candidates and %s skipped transactions.",
+        len(included),
+        len(skipped),
     )
     return included
 
@@ -714,16 +431,16 @@ def review_and_confirm(
         if choice == "q":
             raise EmpowerError("Upload cancelled before confirmation.")
         if choice != "e":
-            print_warn("Please enter 'a', 'e', or 'q'.")
+            logger.warning("Please enter 'a', 'e', or 'q'.")
             continue
 
         raw = input("Enter the review number of the transaction to edit: ").strip()
         if not raw.isdigit():
-            print_warn("Please enter a numeric review number.")
+            logger.warning("Please enter a numeric review number.")
             continue
         selection = int(raw) - 1
         if not (0 <= selection < len(included)):
-            print_warn("Review number out of range.")
+            logger.warning("Review number out of range.")
             continue
 
         transaction = included[selection]
@@ -775,6 +492,8 @@ def print_summary(
 
 
 def main() -> int:
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+
     args = parse_args()
     csv_path = Path(args.csv_path)
     if not csv_path.exists():
@@ -791,20 +510,20 @@ def main() -> int:
 
     client = EmpowerClient(jsessionid=jsessionid, csrf=csrf, timeout=args.timeout)
 
-    print_info("Fetching Empower accounts.")
+    logger.info("Fetching Empower accounts.")
     accounts = client.get_accounts()
     account = choose_account(accounts)
 
-    print_info("Fetching Empower categories.")
+    logger.info("Fetching Empower categories.")
     categories = client.get_categories()
     resolve_categories(transactions, client, categories, mapping_store)
 
     confirmed_transactions = review_and_confirm(transactions, client, categories)
     skipped_transactions = [transaction for transaction in transactions if transaction.skipped]
-    print_info(f"Uploading {len(confirmed_transactions)} transactions to {account.name}.")
+    logger.info("Uploading %s transactions to %s.", len(confirmed_transactions), account.name)
     uploaded, failed = upload_transactions(client, account, confirmed_transactions)
     save_json_file(mapping_file, mapping_store)
-    print_info(f"Saved category mappings to {mapping_file}.")
+    logger.info("Saved category mappings to %s.", mapping_file)
     print_summary(uploaded, failed, skipped_transactions)
 
     return 0 if not failed else 1
@@ -814,8 +533,8 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except KeyboardInterrupt:
-        print_error("Interrupted by user.")
+        logger.error("Interrupted by user.")
         raise SystemExit(130)
     except EmpowerError as exc:
-        print_error(str(exc))
+        logger.error("%s", exc)
         raise SystemExit(1)
