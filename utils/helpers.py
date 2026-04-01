@@ -1,4 +1,4 @@
-"""Reusable helpers for Empower upload workflows."""
+"""Shared helpers used across all scripts."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-from models import EmpowerError
+from utils.errors import EmpowerError
 
 logger = logging.getLogger(__name__)
 
@@ -91,3 +91,36 @@ def ask_non_empty(prompt: str, default: str | None = None) -> str:
         if value:
             return value
         logger.warning("This value cannot be empty.")
+
+
+def prompt_date_range(
+    default_start: dt.date | None = None,
+    default_end: dt.date | None = None,
+) -> tuple[dt.date, dt.date]:
+    while True:
+        start_raw = ask_non_empty(
+            "Start date (YYYY-MM-DD)",
+            default=default_start.isoformat() if default_start is not None else None,
+        )
+        end_raw = ask_non_empty(
+            "End date (YYYY-MM-DD)",
+            default=default_end.isoformat() if default_end is not None else None,
+        )
+
+        try:
+            start_date = dt.date.fromisoformat(start_raw)
+        except ValueError:
+            logger.warning("Start date must be in YYYY-MM-DD format.")
+            continue
+
+        try:
+            end_date = dt.date.fromisoformat(end_raw)
+        except ValueError:
+            logger.warning("End date must be in YYYY-MM-DD format.")
+            continue
+
+        if start_date > end_date:
+            logger.warning("Start date must be on or before end date.")
+            continue
+
+        return start_date, end_date

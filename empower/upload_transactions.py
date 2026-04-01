@@ -10,8 +10,8 @@ from difflib import get_close_matches
 from pathlib import Path
 from typing import Any
 
-from client import EmpowerClient
-from helpers import (
+from .client import EmpowerClient
+from utils.helpers import (
     ask_non_empty,
     format_decimal,
     load_mapping_file,
@@ -20,7 +20,8 @@ from helpers import (
     parse_decimal,
     save_json_file,
 )
-from models import CsvTransaction, EmpowerAccount, EmpowerCategory, EmpowerError
+from utils.errors import EmpowerError
+from .models import CsvTransaction, EmpowerAccount, EmpowerCategory
 
 DEFAULT_TIMEOUT_SECONDS = 30
 DEFAULT_MAPPING_FILE = Path(__file__).with_name("category_mappings.json")
@@ -83,25 +84,6 @@ def read_transactions(csv_path: Path) -> list[CsvTransaction]:
     if not rows:
         raise EmpowerError("The CSV file does not contain any transaction rows.")
     return rows
-
-
-def choose_account(accounts: list[EmpowerAccount]) -> EmpowerAccount:
-    print("\nAvailable Empower accounts:")
-    for index, account in enumerate(accounts, start=1):
-        balance = format_decimal(account.current_balance)
-        label = f"{account.firm_name} | {account.name} | {account.product_type} | balance {balance}"
-        print(f"  {index}. {label}")
-
-    while True:
-        raw = input("Choose an account number: ").strip()
-        if not raw.isdigit():
-            logger.warning("Please enter a numeric account choice.")
-            continue
-
-        selection = int(raw) - 1
-        if 0 <= selection < len(accounts):
-            return accounts[selection]
-        logger.warning("Choice out of range.")
 
 
 def build_category_indexes(categories: list[EmpowerCategory]) -> tuple[dict[int, EmpowerCategory], dict[str, list[EmpowerCategory]]]:
@@ -512,7 +494,7 @@ def main() -> int:
 
     logger.info("Fetching Empower accounts.")
     accounts = client.get_accounts()
-    account = choose_account(accounts)
+    account = client.choose_account(accounts)
 
     logger.info("Fetching Empower categories.")
     categories = client.get_categories()

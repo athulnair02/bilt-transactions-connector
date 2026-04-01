@@ -3,21 +3,19 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import requests
 
-from helpers import format_decimal, parse_decimal, sanitize_jsessionid
-from models import CsvTransaction, EmpowerAccount, EmpowerCategory, EmpowerError
+from utils.helpers import format_decimal, parse_created_at, parse_decimal, sanitize_jsessionid
+from utils.errors import EmpowerError
+from .models import CsvTransaction, EmpowerAccount, EmpowerCategory, EmpowerTransaction
 
 EMPOWER_API_BASE_URL = "https://pc-api.empower-retirement.com/api"
 DEFAULT_TIMEOUT_SECONDS = 30
 DEFAULT_CATEGORY_TYPE = "EXPENSE"
 API_CLIENT = "WEB"
-
-GET_TRANSACTIONS_ENDPOINT = "/transaction/getUserTransactions"
-# TODO: Example format: "/transaction/deleteUserTransaction"
-DELETE_TRANSACTION_ENDPOINT = ""
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +119,24 @@ class EmpowerClient:
             raise EmpowerError("No uploadable accounts were found in the account response.")
         return extracted
 
+    def choose_account(self, accounts: list[EmpowerAccount]) -> EmpowerAccount:
+        print("\nAvailable Empower accounts:")
+        for index, account in enumerate(accounts, start=1):
+            balance = format_decimal(account.current_balance)
+            label = f"{account.firm_name} | {account.name} | {account.product_type} | balance {balance}"
+            print(f"  {index}. {label}")
+
+        while True:
+            raw = input("Choose an account number: ").strip()
+            if not raw.isdigit():
+                logger.warning("Please enter a numeric account choice.")
+                continue
+
+            selection = int(raw) - 1
+            if 0 <= selection < len(accounts):
+                return accounts[selection]
+            logger.warning("Choice out of range.")
+
     def get_categories(self) -> list[EmpowerCategory]:
         payload = self._request_json(
             "POST",
@@ -210,9 +226,17 @@ class EmpowerClient:
             raise EmpowerError("Create-transaction response does not contain a spData object.")
         return sp_data
 
-    def get_transactions(self, account_id: str, start_date: str, end_date: str) -> list[dict[str, Any]]:
-        if start_date is None or end_date is None:
-            raise EmpowerError("start_date and end_date cannot be None.")
+    def get_transactions(
+        self,
+        account_id: str,
+        start_date: str,
+        end_date: str,
+        categories: list[EmpowerCategory],
+    ) -> list[EmpowerTransaction]:
+        if not start_date or not end_date:
+            raise EmpowerError("start_date and end_date cannot be empty.")
+        
+        account_id = int(account_id)
 
         payload = self._request_json(
             "POST",
@@ -224,23 +248,54 @@ class EmpowerClient:
                 "apiClient": API_CLIENT,
             },
         )
-        categories = payload.get("spData")
-        if not isinstance(categories, list):
-            raise EmpowerError("Category response does not contain a spData list.")
-        
-        sp_data = payload.get("spData")
 
+        sp_data = payload.get("spData")
         if not isinstance(sp_data, dict):
             raise EmpowerError("Get-transactions response does not contain a spData object.")
-        
+
         transactions = sp_data.get("transactions")
         if not isinstance(transactions, list):
             raise EmpowerError("Get-transactions response spData does not contain a transactions list.")
-        
-        # The accountId returned in each transaction is in the format "XXX_XXX_12345", but we want to match just the "12345" part
-        filtered_transactions = [tx for tx in transactions if str(tx.get("userAccountId")) == account_id]
 
-        return filtered_transactions
+        extracted: list[EmpowerTransaction] = []
+        for item in transactions:
+            if not isinstance(item, dict):
+                continue
+
+            user_transaction_id = item.get("userTransactionId")
+            user_account_id = item.get("userAccountId")
+            transaction_date_value = item.get("transactionDate")
+            amount_value = item.get("amount")
+            if (
+                not isinstance(user_transaction_id, int)
+                or not isinstance(user_account_id, int)
+                or not isinstance(transaction_date_value, str)
+            ):
+                continue
+
+            if user_account_id != account_id:
+                continue
+
+            category_id = item.get("categoryId")
+            category_name = "N/A"
+            for category in categories:
+                if category.category_id == category_id:
+                    category_name = category.name
+                    break
+
+            extracted.append(
+                EmpowerTransaction(
+                    user_transaction_id=user_transaction_id,
+                    amount=parse_decimal(str(amount_value), field_name="amount"),
+                    transaction_date=parse_created_at(transaction_date_value),
+                    is_manual=bool(item.get("isManual", False)),
+                    category_id=category_id,
+                    category_name=category_name,
+                    transaction_type=item.get("transactionType") if isinstance(item.get("transactionType"), str) else "",
+                )
+            )
+
+        return extracted
 
     def delete_transaction(
         self,

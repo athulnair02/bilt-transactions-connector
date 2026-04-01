@@ -7,10 +7,6 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 
-class EmpowerError(Exception):
-    """Base application error."""
-
-
 @dataclass(frozen=True)
 class EmpowerAccount:
     account_id: str
@@ -26,6 +22,17 @@ class EmpowerCategory:
     name: str
     category_type: str
     is_editable: bool
+
+
+@dataclass(frozen=True)
+class EmpowerTransaction:
+    user_transaction_id: int
+    amount: Decimal
+    transaction_date: dt.date
+    is_manual: bool
+    category_id: int | None
+    category_name: str | None
+    transaction_type: str
 
 
 @dataclass

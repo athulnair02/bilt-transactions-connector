@@ -15,12 +15,14 @@ import csv
 import datetime as dt
 import json
 import re
-import sys
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import requests
+
+from utils.errors import BiltError, UnauthorizedError
+from utils.helpers import prompt_date_range
 
 ID_BASE_URL = "https://id.biltrewards.com"
 WEB_BASE_URL = "https://www.bilt.com"
@@ -28,15 +30,7 @@ API_BASE_URL = "https://api.biltrewards.com"
 
 DEFAULT_TIMEOUT_SECONDS = 30
 DEFAULT_PAGE_SIZE = 100
-DEFAULT_CACHE_FILE = ".bilt_token_cache.json"
-
-
-class BiltError(Exception):
-    """Base application error."""
-
-
-class UnauthorizedError(BiltError):
-    """Raised when a protected API returns 401."""
+DEFAULT_CACHE_FILE = "bilt/.bilt_token_cache.json"
 
 
 def print_info(message: str) -> None:
@@ -94,21 +88,6 @@ def is_token_valid(token: str | None, now_epoch: int | None = None, skew_seconds
     now = now_epoch if now_epoch is not None else int(time.time())
     return exp > now + skew_seconds
 
-
-def parse_iso_date(value: str) -> dt.date:
-    try:
-        return dt.date.fromisoformat(value)
-    except ValueError as exc:
-        raise BiltError(f"Invalid date '{value}'. Expected YYYY-MM-DD.") from exc
-
-
-def ask_date(prompt: str) -> dt.date:
-    while True:
-        value = input(prompt).strip()
-        try:
-            return parse_iso_date(value)
-        except BiltError as exc:
-            print_warn(str(exc))
 
 
 def ask_phone(cached_phone: str | None = None) -> str:
@@ -542,10 +521,11 @@ def main() -> int:
     cards = extract_cards(wallet_payload)
     card_id = choose_card(cards)
 
-    start_date = ask_date("Start date (YYYY-MM-DD): ")
-    end_date = ask_date("End date (YYYY-MM-DD): ")
-    if end_date < start_date:
-        raise BiltError("End date must be on or after start date.")
+    today = dt.date.today()
+    start_date, end_date = prompt_date_range(
+        default_start=today.replace(day=1),
+        default_end=today,
+    )
 
     print_info(f"Fetching transactions for card {card_id} from {start_date} to {end_date}.")
     transactions, token = fetch_transactions(
@@ -571,6 +551,11 @@ def main() -> int:
         if args.output
         else Path(f"transactions_{start_date.isoformat()}_{end_date.isoformat()}.csv")
     )
+
+    # Make sure the output path starts with "bilt/"
+    if output_path.parts[0] != "bilt":
+        output_path = Path("bilt") / output_path
+    
     write_csv(output_path, rows)
 
     print_info(f"Export complete. Wrote {len(rows)} rows to {output_path}.")
