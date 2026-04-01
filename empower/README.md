@@ -1,68 +1,123 @@
-# Empower Financial Transaction Connector
+# Empower Scripts
 
-Uploads transactions from a Bilt-exported CSV into an Empower account so they do not need to be entered manually in the Empower UI.
+The following scripts are to help manage your transactions with Empower (formerly Personal Capital) so that you can better understand your cash flow and budgeting since there is no option to connect with biltrewards or to properly upload a CSV of transactions. 
+
+These scripts therefore allow you to continue using the Bilt 2.0 card and have a connection to Empower's personal finance tools so you can be a responsible spender.
+
+The `empower` package contains two interactive CLIs:
+
+- `python -m empower.upload_transactions`: upload a Bilt-exported CSV into an Empower account
+- `python -m empower.delete_transactions`: list Empower transactions in a date range and delete selected manual entries
+
+Run both commands from the repository root.
 
 ## Requirements
 
-- JSESSIONID cookie
-- csrf token
-- Bilt CSV file path
+Both scripts require an active Empower web session:
 
-## Run
+- `JSESSIONID` cookie value
+- `csrf` token value
 
-From the repository root:
+You can either pass them as flags or let the script prompt for them.
+
+## Upload Transactions
+
+### Command
 
 ```bash
-python empower/upload_transactions.py /path/to/transactions.csv
+python -m empower.upload_transactions /path/to/transactions.csv
 ```
 
-You can also pass credentials directly:
+Example with explicit credentials:
 
 ```bash
-python empower/upload_transactions.py /path/to/transactions.csv \
+python -m empower.upload_transactions /path/to/transactions.csv \
   --jsessionid '<cookie-value>' \
   --csrf '<csrf-token>'
 ```
 
-Optional flags:
+Help:
 
-- `--mapping-file <path>`: override the local Bilt-to-Empower category mapping JSON file
-- `--timeout <seconds>`: change the HTTP timeout for Empower API calls
+```bash
+python -m empower.upload_transactions --help
+```
 
-## Workflow
+Options:
 
-1. Provide the Empower session values: `JSESSIONID` and `csrf`
+- `--jsessionid <value>`: Empower `JSESSIONID` cookie
+- `--csrf <value>`: Empower `csrf` token
+- `--mapping-file <path>`: override the local Bilt-to-Empower mapping file
+- `--timeout <seconds>`: override the HTTP timeout
+
+Workflow:
+
+1. Load the CSV exported by `python -m bilt.retrieve_transactions`
 2. Fetch available Empower accounts and choose the destination account
-3. Fetch all current Empower categories
-4. Read the Bilt CSV and try to resolve each Bilt category in this order:
-	- saved local mapping
-	- exact case-insensitive match
-	- normalized match
-	- interactive choice with fuzzy suggestions
-5. For unmatched categories, choose one of these actions:
-	- map to an existing Empower category
-	- create a new Empower category
-	- skip that transaction
-6. After initial resolution, review the full batch before upload
-7. In the review loop, either:
-	- accept the batch
-	- edit a single transaction and again choose one of:
-	  - map to an existing Empower category
-	  - create a new Empower category
-	  - skip the transaction
-8. After accepting the batch, upload the transactions to the selected Empower account
-9. Save the local category mapping JSON for future runs
+3. Fetch current Empower categories
+4. Resolve each Bilt category using this order:
+   - saved local mapping
+   - exact case-insensitive match
+   - normalized match
+   - interactive selection with fuzzy suggestions
+5. For unmatched categories, choose to map, create a category, or skip the transaction
+6. Review the full upload batch before submission
+7. Upload the accepted transactions to Empower
+8. Save reusable category mappings for future runs
 
-## Local Mapping Cache
+Mapping file behavior:
 
-The uploader stores Bilt-to-Empower category mappings in `empower/category_mappings.json` by default.
+- Default mapping file: `empower/category_mappings.json`
+- New saved mappings are reused on later runs
+- Review-time one-off edits affect only the current run unless a new mapping is explicitly saved
 
-- Saved mappings are checked before any category comparison on future runs
-- When you explicitly map a Bilt category or create a new Empower category during initial resolution, that mapping is saved for reuse
-- Review-time edits only change the selected transaction for the current run; they do not rewrite the shared category mapping automatically
+Notes:
 
-## Notes
+- The uploader prints a review table before creating any Empower transactions
+- Skipped rows are excluded from upload
+- Newly created Empower categories are usable immediately in the same run
 
-- The uploader prints a batch confirmation view with every transaction that will be uploaded, including the original Bilt category and final Empower category
-- Transactions skipped during initial resolution or review are excluded from upload
-- New Empower categories are used immediately after creation; a separate category refresh is not required
+## Delete Manual Transactions
+
+### Command
+
+```bash
+python -m empower.delete_transactions
+```
+
+Example with explicit credentials:
+
+```bash
+python -m empower.delete_transactions \
+  --jsessionid '<cookie-value>' \
+  --csrf '<csrf-token>'
+```
+
+Help:
+
+```bash
+python -m empower.delete_transactions --help
+```
+
+Options:
+
+- `--jsessionid <value>`: Empower `JSESSIONID` cookie
+- `--csrf <value>`: Empower `csrf` token
+- `--timeout <seconds>`: override the HTTP timeout
+
+Workflow:
+
+1. Prompt for or accept the Empower session values
+2. Prompt for a date range, defaulting to the first day of the current month through today
+3. Fetch available Empower accounts and choose one
+4. Fetch categories and transactions for the chosen account and date range
+5. Print a numbered table including date, amount, type, category, and whether the transaction is manual
+6. Enter row numbers to delete using values like `1,3,5-7`
+7. Review the selected manual transactions and confirm deletion
+8. Delete only transactions marked as manual
+9. Print a summary of deleted, failed, and skipped non-manual rows
+
+Notes:
+
+- Non-manual transactions cannot be deleted by this script and are skipped automatically
+- If you select only non-manual rows, the script asks you to choose again
+- Enter `q` at the selection prompt to exit without deleting anything

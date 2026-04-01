@@ -448,14 +448,24 @@ def fetch_transactions(
         if not rows:
             break
 
-        all_transactions.extend(rows)
-        print_info(f"Fetched page {page_index} with {len(rows)} transactions.")
+        # Filter out rows have a createdAt before start_date since their API returns values before startDate (idk why)
+        filtered_rows = []
+        for row in rows:
+            created_at_str = row.get("createdAt")
+            created_at = dt.datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+            
+            if created_at.date() < start_date:
+                continue
+            filtered_rows.append(row)
+
+        all_transactions.extend(filtered_rows)
+        print_info(f"Fetched page {page_index} with {len(filtered_rows)} transactions.")
 
         has_more_pages = payload.get("hasMorePages")
         if has_more_pages is False:
             break
 
-        if has_more_pages is not True and len(rows) < page_size:
+        if has_more_pages is not True and len(filtered_rows) < page_size:
             break
 
         page_index += 1

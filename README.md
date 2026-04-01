@@ -1,55 +1,69 @@
-# Bilt Transaction Retriever
+# Bilt Transaction Manager
 
-CLI script to export Bilt transactions to CSV with resilient authentication.
+The Bilt platform has undergone plenty of changes after their shift to Bilt 2.0 which has brought on some pain points for their customers. One of which is the ability to connect with certain financial aggregators (e.g. Empower) to have a better picture of financial health. These scripts allow a user to download all their transactions (including spending category, which is still a missing feature) and upload them to financial aggregators missing connections with Plaid/biltrewards.
 
-Auth fallback chain:
-1. Use cached JWT if still valid.
-2. If JWT is expired/missing, use cached refresh token cookie (`app.rt`) to mint a new JWT.
-3. If refresh token fails, run SMS OTP flow.
+This repository contains three CLI entry points:
 
-If any protected endpoint returns `401`, the script automatically runs the same chain and retries once.
+- `python -m bilt.retrieve_transactions`: export Bilt card transactions to CSV
+- `python -m empower.upload_transactions`: upload a Bilt CSV into Empower
+- `python -m empower.delete_transactions`: review and delete manual Empower transactions
+
+Use module execution (`python -m ...`) from the repository root. That keeps imports consistent across the `bilt`, `empower`, and `utils` packages.
 
 ## Setup
 
-1. Create and activate a Python environment.
+1. Create and activate a Python virtual environment.
 2. Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Run
+3. Run commands from the repository root:
 
 ```bash
-python main.py
+cd /path/to/bilt-transactions
 ```
 
-The script will:
-1. Authenticate (cache/JWT/refresh/OTP fallback).
-2. Fetch wallet cards and show a numbered selection menu.
-3. Ask for date range (`YYYY-MM-DD` start and end).
-4. Fetch paginated transactions.
-5. Export CSV (one transaction per row).
+## Scripts
 
-## Command options
+### Bilt Export
+
+Run:
 
 ```bash
-python main.py --help
+python -m bilt.retrieve_transactions
 ```
+
+Help:
+
+```bash
+python -m bilt.retrieve_transactions --help
+```
+
+What it does:
+
+1. Authenticates with Bilt using the cached JWT, then the cached refresh token, then SMS OTP if needed.
+2. Fetches your Bilt wallet and shows a numbered card-selection menu.
+3. Prompts for a start and end date.
+4. Retrieves paginated transactions for the selected card.
+5. Writes the result to CSV.
 
 Common flags:
-- `--output <path>`: custom CSV output path.
-- `--cache-file <path>`: custom cache file path (default `.bilt_token_cache.json`).
-- `--page-size <n>`: API page size for transaction retrieval (default `100`).
-- `--force-otp`: bypass cache and force OTP login.
 
-## Output
+- `--output <path>`: write the CSV to a custom location
+- `--cache-file <path>`: override the token cache file path
+- `--page-size <n>`: override the Bilt transactions page size
+- `--force-otp`: ignore the cache and force a new OTP login
 
-Default output filename when `--output` is omitted:
+Default output filename:
 
-`transactions_<start-date>_<end-date>.csv`
+```text
+transactions_<start-date>_<end-date>.csv
+```
 
 CSV columns:
+
 - `status`
 - `type`
 - `amount`
@@ -58,14 +72,34 @@ CSV columns:
 - `merchant`
 - `category`
 
-## Cache behavior
+Cache behavior:
 
-- Cache file: `.bilt_token_cache.json`
-- Stored values: phone, JWT, JWT expiry, refresh token cookie, update timestamp.
-- Cache file is ignored by git via `.gitignore`.
+- Default cache file: `bilt/.bilt_token_cache.json`
+- Stored values: phone number, refresh token, JWT, JWT expiry, updated timestamp
+- If a protected Bilt endpoint returns `401`, the exporter re-runs the auth chain and retries once
+
+### Empower Upload
+
+See [empower/README.md](./empower/README.md) for the full upload workflow.
+
+Quick start:
+
+```bash
+python -m empower.upload_transactions transactions_2026-03-01_2026-03-31.csv
+```
+
+### Empower Delete
+
+See [empower/README.md](./empower/README.md) for the full delete workflow.
+
+Quick start:
+
+```bash
+python -m empower.delete_transactions
+```
 
 ## Notes
 
-- Phone number must include country code, for example `+11234567890`.
-- OTP retrieval remains manual (you enter the code received by SMS).
-- If token schema changes upstream, you may need to update response parsing logic.
+- Phone numbers for Bilt OTP must include country code, for example `+11234567890`
+- The Bilt OTP step is manual: the script prompts you to enter the SMS code
+- Empower scripts require a valid `JSESSIONID` cookie and `csrf` token from an active Empower session
