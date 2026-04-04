@@ -1,4 +1,4 @@
-# Bilt Transaction Manager
+# Bilt Transaction Connector
 
 The Bilt platform has undergone plenty of changes after their shift to Bilt 2.0 which has brought on some pain points for their customers. One of which is the ability to connect with certain financial aggregators (e.g. Empower) to have a better picture of financial health. These scripts allow a user to download all their transactions (including spending category, which is still a missing feature) and upload them to financial aggregators missing connections with Plaid/biltrewards.
 
