@@ -72,8 +72,6 @@ Column meanings:
 
 ## 3) Empower Session Values (JSESSIONID + csrf)
 
-Use this section as your template/checklist when you capture tokens from an active Empower web session.
-
 ### JSESSIONID
 Go to the application tab in your chrome dev tools and search for the cookie JSESSIONID. Find the row where the domain is https://pc-api.empower-retirement.com/. This is your JSESSIONID value.
 
