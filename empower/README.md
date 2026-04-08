@@ -20,6 +20,18 @@ Both scripts require an active Empower web session:
 
 You can either pass them as flags or let the script prompt for them.
 
+## How to get JSESSIONID and csrf
+### JSESSIONID
+Go to the application tab in your chrome dev tools and search for the cookie JSESSIONID. Find the row where the domain is *pc-api.empower-retirement.com*. This is your JSESSIONID value.
+
+>e.g. 6E26EE3B49ED9F9A0A10C6B20EE67F3F
+
+### csrf
+
+Go to the network tab in your chrome dev tools and search for saml2. Make sure it is open as you log into your account. In the response of the request, look for the field "csrf" and that is the csrf value to use.
+
+>e.g. 432ee3c1-2221-481b-adbe-95e018013924
+
 ## Upload Transactions
 
 ### Command

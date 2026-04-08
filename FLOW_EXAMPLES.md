@@ -71,17 +71,9 @@ Column meanings:
 - `category`: Bilt category label
 
 ## 3) Empower Session Values (JSESSIONID + csrf)
+Retrieve the **JSESSIONID** cookie value and **csrf** from your browser session.
 
-### JSESSIONID
-Go to the application tab in your chrome dev tools and search for the cookie JSESSIONID. Find the row where the domain is https://pc-api.empower-retirement.com/. This is your JSESSIONID value.
-
->e.g. 6E26EE3B49ED9F9A0A10C6B20EE67F3F
-
-### csrf
-
-Go to the network tab in your chrome dev tools and search for saml2. Make sure it is open as you log into your account. In the response of the request, look for the field "csrf" and that is the csrf value to use.
-
->e.g. 432ee3c1-2221-481b-adbe-95e018013924
+See empower/README.md for more info
 
 ## 4) Upload CSV to Empower
 
