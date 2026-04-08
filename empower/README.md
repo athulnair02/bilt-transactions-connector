@@ -26,11 +26,15 @@ Go to the application tab in your chrome dev tools and search for the cookie JSE
 
 >e.g. 6E26EE3B49ED9F9A0A10C6B20EE67F3F
 
+<img width="1290" height="290" alt="JSESSION-location" src="https://github.com/user-attachments/assets/bd513d05-0ef8-4e74-896e-c93d3ab9a83e" />
+
 ### csrf
 
-Go to the network tab in your chrome dev tools and search for saml2. Make sure it is open as you log into your account. In the response of the request, look for the field "csrf" and that is the csrf value to use.
+Go to the network tab in your chrome dev tools and search for **saml2**. Make sure it is open as you log into your account and click the **preserve logs** checkbox. In the response of the request, look for the field "csrf" and that is the value to use.
 
 >e.g. 432ee3c1-2221-481b-adbe-95e018013924
+
+<img width="921" height="632" alt="csrf-location" src="https://github.com/user-attachments/assets/a1ea8419-1183-4d48-ae59-2e3dcaba93f4" />
 
 ## Upload Transactions
 
