@@ -2,9 +2,9 @@
 """Bilt transactions exporter with cached auth fallback chain.
 
 Auth precedence:
-1) Cached JWT if still valid.
-2) Cached refresh token (app.rt cookie) to mint a new JWT.
-3) SMS OTP flow if cookie refresh fails.
+1) Cached accessToken if still valid.
+2) Cached refreshToken to get a new accessToken.
+3) SMS OTP flow if refresh token fails.
 """
 
 from __future__ import annotations
@@ -14,10 +14,9 @@ import base64
 import csv
 import datetime as dt
 import json
-import re
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
@@ -141,39 +140,6 @@ def request_json(
         raise BiltError(f"{method} {url} did not return JSON.") from exc
 
 
-def extract_refresh_token_from_response(response: requests.Response) -> str | None:
-    if "app.rt" in response.cookies:
-        return response.cookies.get("app.rt")
-
-    set_cookie_headers = response.headers.get("Set-Cookie", "")
-    match = re.search(r"(?:^|;\s*)app\.rt=([^;]+)", set_cookie_headers)
-    if match:
-        return match.group(1)
-
-    return None
-
-
-def extract_jwt_token(payload: dict[str, Any]) -> str | None:
-    candidate_keys = ["token", "accessToken", "jwt", "jwtToken", "idToken"]
-    for key in candidate_keys:
-        value = payload.get(key)
-        if isinstance(value, str) and value.count(".") == 2:
-            return value
-
-    data_value = payload.get("data")
-    if isinstance(data_value, dict):
-        for key in candidate_keys:
-            value = data_value.get(key)
-            if isinstance(value, str) and value.count(".") == 2:
-                return value
-
-    for value in payload.values():
-        if isinstance(value, str) and value.count(".") == 2:
-            return value
-
-    return None
-
-
 def trigger_sms(session: requests.Session, phone: str) -> str:
     url = f"{ID_BASE_URL}/public/auth/sms"
     headers = {
@@ -201,9 +167,14 @@ def trigger_sms(session: requests.Session, phone: str) -> str:
     return verification_id
 
 
-def verify_otp_and_get_refresh_token(
+def verify_otp_and_get_tokens(
     session: requests.Session, phone: str, verification_id: str, otp_code: str
-) -> str:
+) -> tuple[str, str]:
+    """Verify OTP and extract accessToken and refreshToken from response.
+    
+    Returns:
+        tuple[str, str]: (accessToken, refreshToken)
+    """
     url = f"{ID_BASE_URL}/public/auth/sms"
     payload = {
         "channel": "SMS",
@@ -211,30 +182,59 @@ def verify_otp_and_get_refresh_token(
         "loginId": phone,
         "otpCode": otp_code,
         "rememberMe": True,
-        "verificationId": verification_id,
-        "responseType": "code",
+        "verificationId": verification_id
     }
 
     response = session.put(url, json=payload, timeout=DEFAULT_TIMEOUT_SECONDS)
     if response.status_code >= 400:
         raise BiltError(f"OTP verification failed ({response.status_code}): {response.text[:500]}")
 
-    refresh_token = extract_refresh_token_from_response(response)
-    if not refresh_token:
-        raise BiltError("Could not find refresh token cookie app.rt after OTP verification.")
+    try:
+        body = response.json()
+    except ValueError as exc:
+        raise BiltError("OTP verification response was not valid JSON.") from exc
 
-    return refresh_token
+    if not isinstance(body, dict):
+        raise BiltError("OTP verification response was not a JSON object.")
+
+    access_token = body.get("accessToken")
+    refresh_token = body.get("refreshToken")
+
+    if not isinstance(access_token, str) or not access_token.strip():
+        raise BiltError("accessToken missing or empty in OTP verification response.")
+    if not isinstance(refresh_token, str) or not refresh_token.strip():
+        raise BiltError("refreshToken missing or empty in OTP verification response.")
+
+    return access_token, refresh_token
 
 
-def get_jwt_from_refresh_token(session: requests.Session, refresh_token: str) -> str:
-    url = f"{WEB_BASE_URL}/api/id/public/user/authentication/token"
-    headers = {"Cookie": f"app.rt={refresh_token}"}
+def refresh_access_token(session: requests.Session, refresh_token: str) -> tuple[str, str]:
+    """Get new accessToken using refreshToken.
+    
+    Args:
+        session: requests session
+        refresh_token: refresh token to use
+    
+    Returns:
+        tuple[str, str]: (accessToken, refreshToken)
+            If refreshToken in response is non-empty, it replaces the input token.
+            Otherwise, the input refreshToken is returned unchanged.
+    """
+    url = f"{WEB_BASE_URL}/public/user/authentication/token"
+    headers = {"Cookie": f"__Host-bilt-rt={refresh_token}"}
 
     payload = request_json(session, "GET", url, headers=headers, expected_status=200)
-    token = extract_jwt_token(payload)
-    if not token:
-        raise BiltError("Could not find JWT token in auth token response.")
-    return token
+    
+    access_token = payload.get("accessToken")
+    if not isinstance(access_token, str) or not access_token.strip():
+        raise BiltError("accessToken missing or empty in auth token response.")
+    
+    # Check if response contains a refreshToken to update; only use if non-empty
+    response_refresh_token = payload.get("refreshToken")
+    if isinstance(response_refresh_token, str) and len(response_refresh_token) > 0:
+        return access_token, response_refresh_token
+    
+    return access_token, refresh_token
 
 
 def ensure_auth(
@@ -245,21 +245,22 @@ def ensure_auth(
     force_otp: bool = False,
 ) -> str:
     if not force_otp:
-        cached_jwt = cache.get("access_token") if isinstance(cache.get("access_token"), str) else None
-        if is_token_valid(cached_jwt):
-            print_info("Using cached JWT token.")
-            return cached_jwt
+        cached_access_token = cache.get("access_token") if isinstance(cache.get("access_token"), str) else None
+        if is_token_valid(cached_access_token):
+            print_info("Using cached accessToken.")
+            return cached_access_token
 
         refresh_token = cache.get("refresh_token") if isinstance(cache.get("refresh_token"), str) else None
         if refresh_token:
-            print_info("Cached JWT missing/expired. Requesting new JWT using cached refresh token.")
+            print_info("Cached accessToken missing/expired. Requesting new accessToken using cached refresh token.")
             try:
-                jwt_token = get_jwt_from_refresh_token(session, refresh_token)
-                cache["access_token"] = jwt_token
-                cache["access_token_exp"] = decode_jwt_exp(jwt_token)
+                access_token, updated_refresh_token = refresh_access_token(session, refresh_token)
+                cache["access_token"] = access_token
+                cache["access_token_exp"] = decode_jwt_exp(access_token)
+                cache["refresh_token"] = updated_refresh_token
                 cache["updated_at"] = int(time.time())
                 save_cache(cache_path, cache)
-                return jwt_token
+                return access_token
             except BiltError as exc:
                 print_warn(f"Refresh-token auth failed: {exc}")
 
@@ -268,18 +269,17 @@ def ensure_auth(
     verification_id = trigger_sms(session, phone)
     print_info(f"OTP requested. verificationId captured: {verification_id}")
     otp_code = ask_otp()
-    refresh_token = verify_otp_and_get_refresh_token(session, phone, verification_id, otp_code)
-    jwt_token = get_jwt_from_refresh_token(session, refresh_token)
+    access_token, refresh_token = verify_otp_and_get_tokens(session, phone, verification_id, otp_code)
 
     cache["phone"] = phone
     cache["refresh_token"] = refresh_token
-    cache["access_token"] = jwt_token
-    cache["access_token_exp"] = decode_jwt_exp(jwt_token)
+    cache["access_token"] = access_token
+    cache["access_token_exp"] = decode_jwt_exp(access_token)
     cache["updated_at"] = int(time.time())
     save_cache(cache_path, cache)
-    print_info("Authentication cache updated with new refresh token and JWT.")
+    print_info("Authentication cache updated with new refresh token and accessToken.")
 
-    return jwt_token
+    return access_token
 
 
 def request_with_reauth(
@@ -296,12 +296,18 @@ def request_with_reauth(
         try:
             payload = response.json()
             if isinstance(payload, dict):
+                # Check for refreshToken update in response
+                response_refresh_token = payload.get("refreshToken")
+                if isinstance(response_refresh_token, str) and len(response_refresh_token) > 0:
+                    cache["refresh_token"] = response_refresh_token
+                    cache["updated_at"] = int(time.time())
+                    save_cache(cache_path, cache)
                 return payload, bearer_token
             return {"data": payload}, bearer_token
         except ValueError as exc:
             raise BiltError("Protected endpoint did not return JSON.") from exc
 
-    print_warn("Received 401. Attempting auth recovery chain (JWT->refresh->OTP) and one retry.")
+    print_warn("Received 401. Attempting auth recovery chain (accessToken->refresh->OTP) and one retry.")
     new_token = ensure_auth(session, cache, cache_path, force_otp=False)
     retry_response = request_fn(new_token)
     if retry_response.status_code >= 400:
@@ -310,6 +316,12 @@ def request_with_reauth(
     try:
         payload = retry_response.json()
         if isinstance(payload, dict):
+            # Check for refreshToken update in response
+            response_refresh_token = payload.get("refreshToken")
+            if isinstance(response_refresh_token, str) and len(response_refresh_token) > 0:
+                cache["refresh_token"] = response_refresh_token
+                cache["updated_at"] = int(time.time())
+                save_cache(cache_path, cache)
             return payload, new_token
         return {"data": payload}, new_token
     except ValueError as exc:
