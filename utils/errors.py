@@ -7,6 +7,10 @@ class EmpowerError(Exception):
     """Base error for Empower API operations."""
 
 
+class EmpowerLoginError(EmpowerError):
+    """Raised when the automated Empower login flow fails."""
+
+
 class BiltError(Exception):
     """Base error for Bilt API operations."""
 

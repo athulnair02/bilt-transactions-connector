@@ -11,30 +11,25 @@ The `empower` package contains two interactive CLIs:
 
 Run both commands from the repository root.
 
-## Requirements
+## Authentication
 
-Both scripts require an active Empower web session:
+Both scripts log in to Empower automatically.
 
-- `JSESSIONID` cookie value
-- `csrf` token value
+**First run:** the script prompts for your Empower username, password, and plan/employer code (e.g. `TriNet`). On a new device it also sends an SMS/email activation code — enter it when prompted. Credentials are never stored; only the resulting session tokens are cached.
 
-You can either pass them as flags or let the script prompt for them.
+**Subsequent runs:** the cached session is reused. Use `--force-login` to re-authenticate if the session has expired.
 
-## How to get JSESSIONID and csrf
-### JSESSIONID
-Go to the application tab in your chrome dev tools and search for the cookie JSESSIONID. Find the row where the domain is *pc-api.empower-retirement.com*. This is your JSESSIONID value.
+**Cache file:** `empower/.empower_auth_cache.json` (gitignored)
 
->e.g. 6E26EE3B49ED9F9A0A10C6B20EE67F3F
+### Manual override
 
-<img width="1290" height="290" alt="JSESSION-location" src="https://github.com/user-attachments/assets/bd513d05-0ef8-4e74-896e-c93d3ab9a83e" />
+If you prefer to supply session values directly (e.g. from browser DevTools), pass them as flags and auto-login is skipped:
 
-### csrf
-
-Go to the network tab in your chrome dev tools and search for **saml2**. Make sure it is open as you log into your account and click the **preserve logs** checkbox. In the response of the request, look for the field "csrf" and that is the value to use.
-
->e.g. 432ee3c1-2221-481b-adbe-95e018013924
-
-<img width="921" height="632" alt="csrf-location" src="https://github.com/user-attachments/assets/a1ea8419-1183-4d48-ae59-2e3dcaba93f4" />
+```bash
+python -m empower.upload_transactions transactions.csv \
+  --jsessionid '<cookie-value>' \
+  --csrf '<csrf-token>'
+```
 
 ## Upload Transactions
 
@@ -42,14 +37,6 @@ Go to the network tab in your chrome dev tools and search for **saml2**. Make su
 
 ```bash
 python -m empower.upload_transactions /path/to/transactions.csv
-```
-
-Example with explicit credentials:
-
-```bash
-python -m empower.upload_transactions /path/to/transactions.csv \
-  --jsessionid '<cookie-value>' \
-  --csrf '<csrf-token>'
 ```
 
 Help:
@@ -60,8 +47,9 @@ python -m empower.upload_transactions --help
 
 Options:
 
-- `--jsessionid <value>`: Empower `JSESSIONID` cookie
-- `--csrf <value>`: Empower `csrf` token
+- `--jsessionid <value>`: override auto-login with a manual JSESSIONID cookie
+- `--csrf <value>`: override auto-login with a manual csrf token
+- `--force-login`: ignore the cached session and re-authenticate
 - `--mapping-file <path>`: override the local Bilt-to-Empower mapping file
 - `--timeout <seconds>`: override the HTTP timeout
 
@@ -100,14 +88,6 @@ Notes:
 python -m empower.delete_transactions
 ```
 
-Example with explicit credentials:
-
-```bash
-python -m empower.delete_transactions \
-  --jsessionid '<cookie-value>' \
-  --csrf '<csrf-token>'
-```
-
 Help:
 
 ```bash
@@ -116,13 +96,14 @@ python -m empower.delete_transactions --help
 
 Options:
 
-- `--jsessionid <value>`: Empower `JSESSIONID` cookie
-- `--csrf <value>`: Empower `csrf` token
+- `--jsessionid <value>`: override auto-login with a manual JSESSIONID cookie
+- `--csrf <value>`: override auto-login with a manual csrf token
+- `--force-login`: ignore the cached session and re-authenticate
 - `--timeout <seconds>`: override the HTTP timeout
 
 Workflow:
 
-1. Prompt for or accept the Empower session values
+1. Authenticate (auto-login or manual session values)
 2. Prompt for a date range, defaulting to the first day of the current month through today
 3. Fetch available Empower accounts and choose one
 4. Fetch categories and transactions for the chosen account and date range

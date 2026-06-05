@@ -10,6 +10,7 @@ from difflib import get_close_matches
 from pathlib import Path
 from typing import Any
 
+from .auth import ensure_empower_auth
 from .client import EmpowerClient
 from utils.helpers import (
     ask_non_empty,
@@ -20,7 +21,7 @@ from utils.helpers import (
     parse_decimal,
     save_json_file,
 )
-from utils.errors import EmpowerError
+from utils.errors import EmpowerError, EmpowerLoginError
 from .models import CsvTransaction, EmpowerAccount, EmpowerCategory
 
 DEFAULT_TIMEOUT_SECONDS = 30
@@ -33,8 +34,13 @@ logger = logging.getLogger(__name__)
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Upload Bilt transactions CSV rows into Empower.")
     parser.add_argument("csv_path", help="Path to a Bilt-exported CSV file.")
-    parser.add_argument("-j", "--jsessionid", help="Empower JSESSIONID cookie value.")
-    parser.add_argument("-c", "--csrf", help="Empower csrf token value.")
+    parser.add_argument("-j", "--jsessionid", help="Empower JSESSIONID cookie (overrides auto-login).")
+    parser.add_argument("-c", "--csrf", help="Empower csrf token (overrides auto-login).")
+    parser.add_argument(
+        "--force-login",
+        action="store_true",
+        help="Ignore the cached session and re-authenticate.",
+    )
     parser.add_argument(
         "--mapping-file",
         default=str(DEFAULT_MAPPING_FILE),
@@ -483,14 +489,18 @@ def main() -> int:
     if args.timeout <= 0:
         raise EmpowerError("--timeout must be greater than 0.")
 
-    jsessionid = args.jsessionid or ask_non_empty("Enter Empower JSESSIONID")
-    csrf = args.csrf or ask_non_empty("Enter Empower csrf token")
+    extra_cookies: dict[str, str] = {}
+    if args.jsessionid and args.csrf:
+        jsessionid = args.jsessionid
+        csrf = args.csrf
+    else:
+        csrf, jsessionid, extra_cookies = ensure_empower_auth(force=args.force_login)
     mapping_file = Path(args.mapping_file)
 
     transactions = read_transactions(csv_path)
     mapping_store = load_mapping_file(mapping_file)
 
-    client = EmpowerClient(jsessionid=jsessionid, csrf=csrf, timeout=args.timeout)
+    client = EmpowerClient(jsessionid=jsessionid, csrf=csrf, timeout=args.timeout, extra_cookies=extra_cookies)
 
     logger.info("Fetching Empower accounts.")
     accounts = client.get_accounts()
@@ -517,6 +527,9 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         logger.error("Interrupted by user.")
         raise SystemExit(130)
+    except EmpowerLoginError as exc:
+        logger.error("Login failed: %s", exc)
+        raise SystemExit(1)
     except EmpowerError as exc:
         logger.error("%s", exc)
         raise SystemExit(1)

@@ -4,5 +4,7 @@ __pycache__/
 *.csv
 .bilt_token_cache.json
 empower/category_mappings.json
+empower/.empower_auth_cache.json
+empower/empower_network_activity*.har
 .vscode
 .venv

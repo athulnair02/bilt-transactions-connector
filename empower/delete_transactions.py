@@ -7,9 +7,10 @@ import argparse
 import datetime as dt
 import logging
 
+from .auth import ensure_empower_auth
 from .client import DEFAULT_TIMEOUT_SECONDS, EmpowerClient
-from utils.helpers import ask_non_empty, format_decimal, prompt_date_range
-from utils.errors import EmpowerError
+from utils.helpers import format_decimal, prompt_date_range
+from utils.errors import EmpowerError, EmpowerLoginError
 from .models import EmpowerTransaction
 
 LOG_FORMAT = "[%(levelname)s] %(message)s"
@@ -21,8 +22,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Retrieve Empower transactions for a date range and delete selected manual transactions."
     )
-    parser.add_argument("-j", "--jsessionid", help="Empower JSESSIONID cookie value.")
-    parser.add_argument("-c", "--csrf", help="Empower csrf token value.")
+    parser.add_argument("-j", "--jsessionid", help="Empower JSESSIONID cookie (overrides auto-login).")
+    parser.add_argument("-c", "--csrf", help="Empower csrf token (overrides auto-login).")
+    parser.add_argument(
+        "--force-login",
+        action="store_true",
+        help="Ignore the cached session and re-authenticate.",
+    )
     parser.add_argument(
         "--timeout",
         type=int,
@@ -183,15 +189,19 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
     args = parse_args()
 
-    jsessionid = (args.jsessionid or "").strip() or ask_non_empty("Empower JSESSIONID")
-    csrf = (args.csrf or "").strip() or ask_non_empty("Empower csrf")
+    extra_cookies: dict[str, str] = {}
+    if args.jsessionid and args.csrf:
+        jsessionid = args.jsessionid.strip()
+        csrf = args.csrf.strip()
+    else:
+        csrf, jsessionid, extra_cookies = ensure_empower_auth(force=args.force_login)
     today = dt.date.today()
     start_date, end_date = prompt_date_range(
         default_start=today.replace(day=1),
         default_end=today,
     )
 
-    client = EmpowerClient(jsessionid=jsessionid, csrf=csrf, timeout=args.timeout)
+    client = EmpowerClient(jsessionid=jsessionid, csrf=csrf, timeout=args.timeout, extra_cookies=extra_cookies)
 
     accounts = client.get_accounts()
     account = client.choose_account(accounts)
@@ -246,6 +256,9 @@ def main() -> int:
 def run() -> int:
     try:
         return main()
+    except EmpowerLoginError as exc:
+        logger.error("Login failed: %s", exc)
+        return 1
     except EmpowerError as exc:
         logger.error("%s", exc)
         return 1

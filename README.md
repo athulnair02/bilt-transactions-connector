@@ -102,4 +102,3 @@ python -m empower.delete_transactions
 
 - Phone numbers for Bilt OTP must include country code, for example `+11234567890`
 - The Bilt OTP step is manual: the script prompts you to enter the SMS code
-- Empower scripts require a valid `JSESSIONID` cookie and `csrf` token from an active Empower session

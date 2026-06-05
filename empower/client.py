@@ -21,17 +21,26 @@ logger = logging.getLogger(__name__)
 
 
 class EmpowerClient:
-    def __init__(self, jsessionid: str, csrf: str, timeout: int = DEFAULT_TIMEOUT_SECONDS) -> None:
+    def __init__(
+        self,
+        jsessionid: str,
+        csrf: str,
+        timeout: int = DEFAULT_TIMEOUT_SECONDS,
+        extra_cookies: dict[str, str] | None = None,
+    ) -> None:
         self.session = requests.Session()
         self.jsessionid = sanitize_jsessionid(jsessionid)
         self.csrf = csrf.strip()
         self.timeout = timeout
+        self._extra_cookies = extra_cookies or {}
 
         if not self.csrf:
             raise EmpowerError("csrf token cannot be empty.")
 
     def _headers(self) -> dict[str, str]:
-        return {"Cookie": f"JSESSIONID={self.jsessionid}"}
+        all_cookies = {**self._extra_cookies, "JSESSIONID": self.jsessionid}
+        cookie_str = "; ".join(f"{k}={v}" for k, v in all_cookies.items())
+        return {"Cookie": cookie_str}
 
     def _request_json(self, method: str, endpoint: str, **kwargs: Any) -> dict[str, Any]:
         response = self.session.request(
