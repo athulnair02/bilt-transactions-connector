@@ -52,6 +52,27 @@ def _device_fingerprint() -> str:
     return hashlib.md5(raw.encode()).hexdigest()
 
 
+def _browser_headers() -> dict[str, str]:
+    """Realistic browser headers so Cloudflare doesn't block us as a bot.
+
+    Without a real User-Agent, requests sends `python-requests/x.y`, which the
+    Cloudflare protection in front of participant.empower-retirement.com rejects
+    with a 403 "Just a moment..." challenge page.
+    """
+    return {
+        "User-Agent": _USER_AGENT,
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "sec-ch-ua": '"Chromium";v="147", "Not.A/Brand";v="24", "Google Chrome";v="147"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"macOS"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+    }
+
+
 def load_auth_cache(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -306,6 +327,7 @@ def login(
 ) -> tuple[str, str, dict[str, str]]:
     """Run the full 4-step Empower auth flow. Returns (csrf, jsessionid, extra_cookies)."""
     session = requests.Session()
+    session.headers.update(_browser_headers())
 
     logger.info("Authenticating with Empower (step 1/4)...")
     id_token = _step1_get_id_token(session, username, password, accu)
