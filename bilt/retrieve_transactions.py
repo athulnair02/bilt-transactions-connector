@@ -387,6 +387,46 @@ def choose_card(cards: list[dict[str, str]]) -> str:
         print_warn("Choice out of range.")
 
 
+def extract_cardholders(payload: dict[str, Any]) -> list[dict[str, str]]:
+    cardholders: list[dict[str, str]] = []
+    filters = payload.get("filters")
+    raw_cardholders = filters.get("cardholders") if isinstance(filters, dict) else None
+    if not isinstance(raw_cardholders, list):
+        return cardholders
+
+    for item in raw_cardholders:
+        if not isinstance(item, dict):
+            continue
+
+        cardholder_id = item.get("id")
+        name = item.get("displayName")
+        cardholders.append({"cardholder_id": cardholder_id, "label": name})
+
+    return cardholders
+
+
+def choose_cardholder(cardholders: list[dict[str, str]]) -> str | None:
+    """Return the selected cardholder id, or None for all cardholders."""
+    print("\nCardholders:")
+    print("  0. All cardholders")
+    for idx, cardholder in enumerate(cardholders, start=1):
+        print(f"  {idx}. {cardholder['label']} ({cardholder['cardholder_id']})")
+
+    while True:
+        raw = input("Choose a cardholder number [0]: ").strip() or "0"
+        if not raw.isdigit():
+            print_warn("Please enter a valid numeric choice.")
+            continue
+
+        index = int(raw)
+        if index == 0:
+            return None
+        if 1 <= index <= len(cardholders):
+            return cardholders[index - 1]["cardholder_id"]
+
+        print_warn("Choice out of range.")
+
+
 def flatten_transaction(tx: dict[str, Any]) -> dict[str, str]:
     category = tx.get("displayCategory")
     if category != "RENT":
@@ -426,8 +466,10 @@ def fetch_transactions(
     start_date: dt.date,
     end_date: dt.date,
     page_size: int,
-) -> tuple[list[dict[str, Any]], str]:
+    cardholder_id: str | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]], str]:
     all_transactions: list[dict[str, Any]] = []
+    cardholders: list[dict[str, str]] = []
     page_index = 0
     current_token = token
 
@@ -435,15 +477,19 @@ def fetch_transactions(
     end_iso = f"{end_date.isoformat()}T23:59:59Z"
 
     while True:
+        params: dict[str, Any] = {
+            "startDate": start_iso,
+            "endDate": end_iso,
+            "pageIndex": page_index,
+            "pageSize": page_size,
+        }
+        if cardholder_id:
+            params["cardholderIds"] = cardholder_id
+
         def _tx_request(access_token: str) -> requests.Response:
             return session.get(
                 f"{API_BASE_URL}/bilt-card/cards/{card_id}/transactions",
-                params={
-                    "startDate": start_iso,
-                    "endDate": end_iso,
-                    "pageIndex": page_index,
-                    "pageSize": page_size,
-                },
+                params=params,
                 headers={"Authorization": f"Bearer {access_token}"},
                 timeout=DEFAULT_TIMEOUT_SECONDS,
             )
@@ -455,6 +501,9 @@ def fetch_transactions(
             cache_path,
             current_token,
         )
+        if not cardholders:
+            cardholders = extract_cardholders(payload)
+
         rows = payload.get("transactions")
 
         if not rows:
@@ -484,7 +533,7 @@ def fetch_transactions(
         if page_index > 10:
             raise BiltError("Aborting pagination after 10 pages for safety.")
 
-    return all_transactions, current_token
+    return all_transactions, cardholders, current_token
 
 
 def write_csv(output_path: Path, rows: list[dict[str, str]]) -> None:
@@ -550,7 +599,7 @@ def main() -> int:
     )
 
     print_info(f"Fetching transactions for card {card_id} from {start_date} to {end_date}.")
-    transactions, token = fetch_transactions(
+    transactions, cardholders, token = fetch_transactions(
         session,
         token,
         cache,
@@ -560,6 +609,24 @@ def main() -> int:
         end_date,
         args.page_size,
     )
+
+    if cardholders:
+        cardholder_id = choose_cardholder(cardholders)
+        if cardholder_id:
+            print_info(f"Re-fetching transactions for cardholder {cardholder_id}.")
+            transactions, _, token = fetch_transactions(
+                session,
+                token,
+                cache,
+                cache_path,
+                card_id,
+                start_date,
+                end_date,
+                args.page_size,
+                cardholder_id=cardholder_id,
+            )
+    else:
+        print_warn("No cardholders found in transactions response; exporting all transactions.")
 
     cache["access_token"] = token
     cache["access_token_exp"] = decode_jwt_exp(token)
